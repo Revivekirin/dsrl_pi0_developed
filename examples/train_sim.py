@@ -16,9 +16,9 @@ import gymnasium as gym
 import gym_aloha
 from gym.spaces import Dict, Box
 
-from libero.libero import benchmark
-from libero.libero import get_libero_path
-from libero.libero.envs import OffScreenRenderEnv
+# from libero.libero import benchmark
+# from libero.libero import get_libero_path
+# from libero.libero.envs import OffScreenRenderEnv
 
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
@@ -35,14 +35,14 @@ from openpi.shared import download
 home_dir = os.environ['HOME']
 compilation_cache.initialize_cache(os.path.join(home_dir, 'jax_compilation_cache'))
 
-def _get_libero_env(task, resolution, seed):
-    """Initializes and returns the LIBERO environment, along with the task description."""
-    task_description = task.language
-    task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
-    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
-    env = OffScreenRenderEnv(**env_args)
-    env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
-    return env, task_description
+# def _get_libero_env(task, resolution, seed):
+#     """Initializes and returns the LIBERO environment, along with the task description."""
+#     task_description = task.language
+#     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+#     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
+#     env = OffScreenRenderEnv(**env_args)
+#     env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
+#     return env, task_description
 
 def shard_batch(batch, sharding):
     """Shards a batch across devices along its first dimension.
@@ -109,25 +109,37 @@ def main(variant):
     print('writing to output dir ', outputdir)
     
     if variant.env == 'libero':
-        benchmark_dict = benchmark.get_benchmark_dict()
-        task_suite = benchmark_dict["libero_90"]()
-        task_id = 57
-        task = task_suite.get_task(task_id)
-        env, task_description = _get_libero_env(task, 256, variant.seed)
-        eval_env = env
-        variant.task_description = task_description
-        variant.env_max_reward = 1
-        variant.max_timesteps = 400
+    #     benchmark_dict = benchmark.get_benchmark_dict()
+    #     task_suite = benchmark_dict["libero_90"]()
+    #     task_id = 57
+    #     task = task_suite.get_task(task_id)
+    #     env, task_description = _get_libero_env(task, 256, variant.seed)
+    #     eval_env = env
+    #     variant.task_description = task_description
+    #     variant.env_max_reward = 1
+    #     variant.max_timesteps = 400
+        pass
     elif variant.env == 'aloha_cube':
         from gymnasium.envs.registration import register
-        register(
-            id="gym_aloha/AlohaTransferCube-v0",
-            entry_point="gym_aloha.env:AlohaEnv",
-            max_episode_steps=400,
-            nondeterministic=True,
-            kwargs={"obs_type": "pixels", "task": "transfer_cube"},
-        )
-        env = gym.make("gym_aloha/AlohaTransferCube-v0", obs_type="pixels_agent_pos", render_mode="rgb_array")
+        if variant.aloha_task == 'transfer_cube':
+            register(
+                id="gym_aloha/AlohaTransferCube-v0",
+                entry_point="gym_aloha.env:AlohaEnv",
+                max_episode_steps=400,
+                nondeterministic=True,
+                kwargs={"obs_type": "pixels", "task": "transfer_cube"},
+            )
+            env = gym.make("gym_aloha/AlohaTransferCube-v0", obs_type="pixels_agent_pos", render_mode="rgb_array")
+        elif variant.aloha_task == 'insertion':
+            register(
+                id="gym_aloha/AlohaInsertion-v0",
+                entry_point="gym_aloha.env:AlohaEnv",
+                max_episode_steps=400,
+                nondeterministic=True,
+                kwargs = {"obs_type": "pixels", "task": "insertion"},
+            )
+            env = gym.make("gym_aloha/AlohaInsertion-v0", obs_type="pixels_agent_pos", render_mode="rgb_array")
+
         eval_env = copy.deepcopy(env)
         variant.env_max_reward = 4
         variant.max_timesteps = 400
@@ -145,8 +157,9 @@ def main(variant):
     
 
     if variant.env == 'libero':
-        config = openpi_config.get_config("pi0_libero")
-        checkpoint_dir = download.maybe_download("s3://openpi-assets/checkpoints/pi0_libero")
+        # config = openpi_config.get_config("pi0_libero")
+        # checkpoint_dir = download.maybe_download("s3://openpi-assets/checkpoints/pi0_libero")
+        pass
     elif variant.env == 'aloha_cube':
         config = openpi_config.get_config("pi0_aloha_sim")
         checkpoint_dir = download.maybe_download("s3://openpi-assets/checkpoints/pi0_aloha_sim")

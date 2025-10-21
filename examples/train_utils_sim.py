@@ -241,7 +241,7 @@ def collect_traj(variant, agent, env, i, agent_dp=None):
                 noise = np.repeat(actions_noise[-1:, :], 50 - actions_noise.shape[0], axis=0)
                 noise = jax.numpy.concatenate([actions_noise, noise], axis=0)[None]
             
-            actions = agent_dp.infer(obs_pi_zero, noise=noise)["actions"]
+            actions = agent_dp.infer(obs_pi_zero, noise=noise)["actions"] # actions from pi0
             action_list.append(actions_noise)
             obs_list.append(obs_dict)
      
@@ -264,6 +264,7 @@ def collect_traj(variant, agent, env, i, agent_dp=None):
         'pixels': curr_image[np.newaxis, ..., np.newaxis],
         'state': qpos[np.newaxis, ..., np.newaxis],
     }
+    print("obs_dicxt keys:", obs_dict.keys())
     obs_list.append(obs_dict)
     image_list.append(curr_image)
     
