@@ -37,4 +37,5 @@ python3 $ROOT_DIR/examples/launch_train_sim.py \
 --query_freq 50 \
 --hidden_dims 128 \
 --target_entropy 0.0 \
---aloha_task insertion
+--aloha_task insertion \
+# --add_states True

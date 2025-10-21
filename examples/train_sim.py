@@ -9,6 +9,7 @@ import pathlib, copy
 
 import jax
 from jaxrl2.agents.pixel_sac.pixel_sac_learner import PixelSACLearner
+from jaxrl2.agents.fql.fql import FQLAgent
 from jaxrl2.utils.general_utils import add_batch_dim
 import numpy as np
 
@@ -168,6 +169,7 @@ def main(variant):
     agent_dp = policy_config.create_trained_policy(config, checkpoint_dir)
     print("Loaded pi0 policy from %s", checkpoint_dir)
     agent = PixelSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
+    # agent = FQLAgent(variant.seed, sample_obs, sample_action, **kwargs)
 
     online_buffer_size = variant.max_steps  // variant.multi_grad_step
     online_replay_buffer = ReplayBuffer(dummy_env.observation_space, dummy_env.action_space, int(online_buffer_size))
