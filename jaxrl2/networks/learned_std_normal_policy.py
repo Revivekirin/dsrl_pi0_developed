@@ -83,6 +83,7 @@ class LearnedStdTanhNormalPolicy(nn.Module):
     def __call__(self,
                  observations: jnp.ndarray,
                  training: bool = False) -> distrax.Distribution:
+        
         outputs = MLP(self.hidden_dims,
                       activate_final=True,
                       dropout_rate=self.dropout_rate)(observations,

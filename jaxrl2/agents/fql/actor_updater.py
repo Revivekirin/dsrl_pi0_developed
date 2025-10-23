@@ -8,9 +8,8 @@ from flax.training.train_state import TrainState
 from jaxrl2.data.dataset import DatasetDict
 from jaxrl2.types import Params, PRNGKey
 
-
 def update_actor(key: PRNGKey, actor: TrainState, critic: TrainState,
-                 temp: TrainState, batch: DatasetDict, cross_norm:bool=False, critic_reduction:str='min') -> Tuple[TrainState, Dict[str, float]]:
+                 batch: DatasetDict, cross_norm:bool=False, critic_reduction:str='min') -> Tuple[TrainState, Dict[str, float]]:
     
     key, key_act = jax.random.split(key, num=2)
 
@@ -25,6 +24,7 @@ def update_actor(key: PRNGKey, actor: TrainState, critic: TrainState,
             if type(next_dist) == tuple:
                 next_dist, new_model_state = next_dist
         else:
+
             dist = actor.apply_fn({'params': actor_params}, batch['observations'])
             next_dist = actor.apply_fn({'params': actor_params}, batch['next_observations'])
             new_model_state = {}
@@ -50,7 +50,8 @@ def update_actor(key: PRNGKey, actor: TrainState, critic: TrainState,
             q = qs.mean(axis=0)
         else:
             raise ValueError(f"Invalid critic reduction: {critic_reduction}")
-        actor_loss = (log_probs * temp.apply_fn({'params': temp.params}) - q).mean()
+        
+        actor_loss = 0 #TODO
 
         things_to_log = {
             'actor_loss': actor_loss,

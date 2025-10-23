@@ -26,7 +26,8 @@ if __name__ == '__main__':
     parser.add_argument('--resize_image', default=-1, help='the size of image if need resizing', type=int)
     parser.add_argument('--query_freq', default=-1, help='query frequency', type=int)
     parser.add_argument('--aloha_task', default='transfer_cube', help='which aloha task to use')
-    
+    parser.add_argument('--project', default='fql_distill', help='or dsrl_pi0')
+
     train_args_dict = dict(
         actor_lr=1e-4,
         critic_lr= 3e-4,
@@ -51,8 +52,32 @@ if __name__ == '__main__':
         action_magnitude=1.0,
         num_cameras=1,
         )
+    
+    fql_train_args_dict = dict(
+        actor_lr=1e-4,
+        critic_lr= 3e-4,
+        hidden_dims= (128, 128, 128),
+        cnn_features= (32, 32, 32, 32),
+        cnn_strides= (2, 1, 1, 1),
+        cnn_padding= 'VALID',
+        latent_dim= 50,
+        discount= 0.999,
+        tau= 0.005,
+        critic_reduction = 'mean',
+        dropout_rate=0.0,
+        aug_next=1,
+        use_bottleneck=True,
+        encoder_type='small',
+        encoder_norm='group',
+        use_spatial_softmax=True,
+        softmax_temperature=-1,
+        target_entropy='auto',
+        num_qs=10,
+        action_magnitude=1.0,
+        num_cameras=1,
+        )
 
-    variant, args = parse_training_args(train_args_dict, parser)
+    variant, args = parse_training_args(fql_train_args_dict, parser)
     print(variant)
     main(variant)
     sys.exit()

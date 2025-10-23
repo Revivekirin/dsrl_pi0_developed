@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jaxrl2.networks import MLP  
 
 
-class OneStepFlowActor(nn.Module):
+class OneStepFlowActor(nn.Module): # step 마다 v에 따른 action 값 출력 
     """z ~ N(0,I) + obs -> action.
        a = clip( z + alpha * v_theta(o, z[, t]) , [-1,1] )
     """
@@ -38,6 +38,7 @@ def _concat(*xs):
     xs = [x for x in xs if x is not None]
     return jnp.concatenate(xs, axis=-1)
 
+
 class ActorVectorField(nn.Module):
     """v_theta(o, a[, t])"""
     hidden_dims: Sequence[int]
@@ -47,7 +48,7 @@ class ActorVectorField(nn.Module):
     def setup(self):
         self.mlp = MLP((*self.hidden_dims, self.action_dim),
                        activate_final=False,
-                       layer_norm=self.layer_norm)
+                       use_layer_norm=self.layer_norm)
 
     @nn.compact
     def __call__(self,

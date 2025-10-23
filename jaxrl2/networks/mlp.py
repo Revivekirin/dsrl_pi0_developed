@@ -87,6 +87,7 @@ class MLPActionSep(nn.Module):
         print ('mlp action sep action post flatten', action.shape)
 
         for i, size in enumerate(self.hidden_dims):
+            # 모든 층에서 action 주입
             x_used = jnp.concatenate([x, action], axis=-1)
             x = nn.Dense(size, kernel_init=default_init())(x_used)
             print ('FF layers: ', x_used.shape, x.shape)

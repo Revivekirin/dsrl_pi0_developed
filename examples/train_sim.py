@@ -9,7 +9,7 @@ import pathlib, copy
 
 import jax
 from jaxrl2.agents.pixel_sac.pixel_sac_learner import PixelSACLearner
-from jaxrl2.agents.fql.fql import FQLAgent
+from jaxrl2.agents.fql.fql_learner import FQLAgent
 from jaxrl2.utils.general_utils import add_batch_dim
 import numpy as np
 
@@ -25,7 +25,7 @@ from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
 import tempfile
 from functools import partial
-from examples.train_utils_sim import trajwise_alternating_training_loop
+from examples.train_utils_sim import trajwise_alternating_training_loop, fql_trajwise_alternating_training_loop
 import tensorflow as tf
 from jax.experimental.compilation_cache import compilation_cache
 
@@ -168,12 +168,18 @@ def main(variant):
         raise NotImplementedError()
     agent_dp = policy_config.create_trained_policy(config, checkpoint_dir)
     print("Loaded pi0 policy from %s", checkpoint_dir)
-    agent = PixelSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
-    # agent = FQLAgent(variant.seed, sample_obs, sample_action, **kwargs)
 
     online_buffer_size = variant.max_steps  // variant.multi_grad_step
     online_replay_buffer = ReplayBuffer(dummy_env.observation_space, dummy_env.action_space, int(online_buffer_size))
     replay_buffer = online_replay_buffer
     replay_buffer.seed(variant.seed)
-    trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger, shard_fn=shard_fn, agent_dp=agent_dp)
+
+    if variant.project == 'dsrl_pi0':
+        agent = PixelSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
+        trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger, shard_fn=shard_fn, agent_dp=agent_dp)
+    elif variant.project == 'fql_distill':
+        agent = FQLAgent(variant.seed, sample_obs, sample_action, **kwargs)
+        fql_trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger, shard_fn=shard_fn, agent_dp=agent_dp)
+
+    
  

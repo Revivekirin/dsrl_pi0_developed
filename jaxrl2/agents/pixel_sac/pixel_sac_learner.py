@@ -18,7 +18,7 @@ from flax.core.frozen_dict import FrozenDict
 from flax.training import train_state
 from typing import Any
 
-from jaxrl2.agents.agent import Agent
+from jaxrl2.agents.fql.agent import Agent
 from jaxrl2.data.augmentations import batched_random_crop, color_transform
 from jaxrl2.networks.encoders.networks import Encoder, PixelMultiplexer
 from jaxrl2.networks.encoders.impala_encoder import ImpalaEncoder, SmallerImpalaEncoder
@@ -123,7 +123,7 @@ class PixelSACLearner(Agent):
                  num_qs: int = 2,
                  target_entropy: float = None,
                  action_magnitude: float = 1.0,
-                 num_cameras: int = 1
+                 num_cameras: int = 1,
                  ):
         """
         An implementation of the version of Soft-Actor-Critic described in https://arxiv.org/abs/1812.05905

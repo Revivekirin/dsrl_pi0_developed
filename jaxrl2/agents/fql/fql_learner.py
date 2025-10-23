@@ -26,8 +26,6 @@ from jaxrl2.networks.encoders.resnet_encoderv1 import ResNet18, ResNet34, ResNet
 from jaxrl2.networks.encoders.resnet_encoderv2 import ResNetV2Encoder
 from jaxrl2.agents.fql.actor_updater import update_actor
 from jaxrl2.agents.fql.critic_updater import update_critic
-# from jaxrl2.agents.pixel_sac.temperature_updater import update_temperature
-# from jaxrl2.agents.pixel_sac.temperature import Temperature
 from jaxrl2.data.dataset import DatasetDict
 # from jaxrl2.networks.learned_std_normal_policy import LearnedStdTanhNormalPolicy
 from jaxrl2.networks.actor_vector_field_policy import OneStepFlowActor
@@ -35,6 +33,7 @@ from jaxrl2.networks.values import StateActionEnsemble
 from jaxrl2.types import Params, PRNGKey
 from jaxrl2.utils.target_update import soft_target_update
 
+from examples.train_utils_sim import batch_size
 
 class TrainState(train_state.TrainState):
     batch_stats: Any
@@ -42,9 +41,9 @@ class TrainState(train_state.TrainState):
 @functools.partial(jax.jit, static_argnames=('critic_reduction', 'color_jitter',  'aug_next', 'num_cameras'))
 def _update_jit(
     rng: PRNGKey, actor: TrainState, critic: TrainState,
-    target_critic_params: Params, temp: TrainState, batch: TrainState,
+    target_critic_params: Params, batch: TrainState,
     discount: float, tau: float, target_entropy: float,
-    critic_reduction: str, color_jitter: bool, aug_next: bool, num_cameras: int,
+    critic_reduction: str, color_jitter: bool, aug_next: bool, num_cameras: int, action_dim: int,
 ) -> Tuple[PRNGKey, TrainState, TrainState, Params, TrainState, Dict[str,float]]:
     aug_pixels = batch['observations']['pixels']
     aug_next_pixels = batch['next_observations']['pixels']
@@ -80,18 +79,23 @@ def _update_jit(
     
     key, rng = jax.random.split(rng)
     target_critic = critic.replace(params=target_critic_params)
-    new_critic, critic_info = update_critic(key, actor, critic, target_critic, temp, batch, discount, critic_reduction=critic_reduction)
+    new_critic, critic_info = update_critic(key, actor, critic, target_critic, batch,
+                                            discount, action_dim, critic_reduction=critic_reduction, )
+    # new_critic, critic_info = update_critic(key, actor, critic, target_critic, temp, batch, discount, critic_reduction=critic_reduction)
     new_target_critic_params = soft_target_update(new_critic.params, target_critic_params, tau)
     
     key, rng = jax.random.split(rng)
-    new_actor, actor_info = update_actor(key, actor, new_critic, temp, batch, critic_reduction=critic_reduction)
-    new_temp, alpha_info = update_temperature(temp, actor_info['entropy'], target_entropy)
+    new_actor, actor_info = update_actor(key, actor, new_critic, batch, critic_reduction=critic_reduction)
 
-    return rng, new_actor, new_critic, new_target_critic_params, new_temp, {
+    return rng, new_actor, new_critic, new_target_critic_params, {
         **critic_info,
         **actor_info,
-        **alpha_info
     }
+
+
+#TODO
+def compute_pi0_actions():
+    pass
 
 
 class FQLAgent(Agent):
@@ -102,7 +106,6 @@ class FQLAgent(Agent):
                  actions: jnp.ndarray,
                  actor_lr: float = 3e-4,
                  critic_lr: float = 3e-4,
-                 temp_lr: float = 3e-4,
                  decay_steps: Optional[int] = None,
                  hidden_dims: Sequence[int] = (256, 256),
                  cnn_features: Sequence[int] = (32, 32, 32, 32),
@@ -120,11 +123,10 @@ class FQLAgent(Agent):
                  softmax_temperature=1,
                  aug_next=True,
                  use_bottleneck=True,
-                 init_temperature: float = 1.0,
                  num_qs: int = 2,
                  target_entropy: float = None,
                  action_magnitude: float = 1.0,
-                 num_cameras: int = 1
+                 num_cameras: int = 1,
                  ):
         """
         An implementation of the version of Soft-Actor-Critic described in https://arxiv.org/abs/1812.05905
@@ -142,7 +144,7 @@ class FQLAgent(Agent):
         self.critic_reduction = critic_reduction
 
         rng = jax.random.PRNGKey(seed)
-        rng, actor_key, critic_key, temp_key = jax.random.split(rng, 4)
+        rng, actor_key, critic_key = jax.random.split(rng, 3)
 
         if encoder_type == 'small':
             encoder_def = Encoder(cnn_features, cnn_strides, cnn_padding)
@@ -172,6 +174,8 @@ class FQLAgent(Agent):
 
         if len(hidden_dims) == 1:
             hidden_dims = (hidden_dims[0], hidden_dims[0], hidden_dims[0])
+
+        #--------------------- policy definition ---------------------
         
         # policy_def = LearnedStdTanhNormalPolicy(hidden_dims, self.action_dim, dropout_rate=dropout_rate, low=-action_magnitude, high=action_magnitude)
 
@@ -191,12 +195,19 @@ class FQLAgent(Agent):
         actor_def = PixelMultiplexer(
             encoder=encoder_def,
             network=policy_def,
+            network_name="actor",
             latent_dim=latent_dim,
             use_bottleneck=use_bottleneck,
         )
 
         print(actor_def)
-        actor_def_init = actor_def.init(actor_key, observations)
+        # initialize noise z
+        bsz = batch_size(observations)
+
+        noise_init = jnp.zeros((bsz, int(self.action_dim)), dtype=jnp.float32)  # (B, 32)
+        times_init = jnp.full((bsz, 1), 1.0, dtype=jnp.float32) 
+        actor_def_init = actor_def.init(actor_key, observations, noise_init, times_init, training=False)
+
         actor_params = actor_def_init['params']
         actor_batch_stats = actor_def_init['batch_stats'] if 'batch_stats' in actor_def_init else None
 
@@ -204,6 +215,8 @@ class FQLAgent(Agent):
                                   params=actor_params,
                                   tx=optax.adam(learning_rate=actor_lr),
                                   batch_stats=actor_batch_stats)
+        
+        #--------------------- critic definition ---------------------
 
         critic_def = StateActionEnsemble(hidden_dims, num_qs=num_qs)
         critic_def = PixelMultiplexer(encoder=encoder_def,
@@ -224,19 +237,11 @@ class FQLAgent(Agent):
                                    )
         target_critic_params = copy.deepcopy(critic_params)
         
-        temp_def = Temperature(init_temperature)
-        temp_params = temp_def.init(temp_key)['params']
-        temp = TrainState.create(apply_fn=temp_def.apply,
-                                 params=temp_params,
-                                 tx=optax.adam(learning_rate=temp_lr),
-                                 batch_stats=None)
-
 
         self._rng = rng
         self._actor = actor
         self._critic = critic
         self._target_critic_params = target_critic_params
-        self._temp = temp
         if target_entropy is None or target_entropy == 'auto':
             self.target_entropy = -self.action_dim / 2
         else:
@@ -244,26 +249,15 @@ class FQLAgent(Agent):
         print(f'target_entropy: {self.target_entropy}')
         print(self.critic_reduction)
 
-    @jax.jit
-    def sample_actions(rng, actor_params, actor_apply_fn, observations, action_dim):
-        rng, sub = jax.random.split(rng)
-        noises = jax.random.normal(sub, (*observations.shape[:-1], action_dim))
-        # PixelMultiplexer는 (obs, actions, training=False) 시그니처
-        actions = actor_apply_fn({'params': actor_params},
-                                observations, noises, False)
-        return actions, rng
-            
 
     def update(self, batch: FrozenDict) -> Dict[str, float]:
-        new_rng, new_actor, new_critic, new_target_critic, new_temp, info = _update_jit(
-            self._rng, self._actor, self._critic, self._target_critic_params, self._temp, batch, self.discount, self.tau, self.target_entropy, self.critic_reduction, self.color_jitter, self.aug_next, self.num_cameras
+        new_rng, new_actor, new_critic, new_target_critic, info = _update_jit(
+            self._rng, self._actor, self._critic, self._target_critic_params, batch, self.discount, self.tau, self.target_entropy, self.critic_reduction, self.color_jitter, self.aug_next, self.num_cameras, self.action_dim
             )
-
         self._rng = new_rng
         self._actor = new_actor
         self._critic = new_critic
         self._target_critic_params = new_target_critic
-        self._temp = new_temp
         return info
 
     def perform_eval(self, variant, i, wandb_logger, eval_buffer, eval_buffer_iterator, eval_env):
@@ -310,7 +304,6 @@ class FQLAgent(Agent):
             'critic': self._critic,
             'target_critic_params': self._target_critic_params,
             'actor': self._actor,
-            'temp': self._temp
         }
         return save_dict
 
@@ -320,7 +313,6 @@ class FQLAgent(Agent):
         self._actor = output_dict['actor']
         self._critic = output_dict['critic']
         self._target_critic_params = output_dict['target_critic_params']
-        self._temp = output_dict['temp']
         print('restored from ', dir)
         
     

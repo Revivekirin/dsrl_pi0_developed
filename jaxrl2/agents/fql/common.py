@@ -84,18 +84,21 @@ def eval_actions_jit(actor_apply_fn: Callable[..., distrax.Distribution],
     return dist.mode()
 
 
-@partial(jax.jit, static_argnames='actor_apply_fn')
-def sample_actions_jit(
-        rng: PRNGKey, actor_apply_fn: Callable[..., distrax.Distribution],
-        actor_params: Params,
-        observations: np.ndarray,
-        actor_batch_stats: Any) -> Tuple[PRNGKey, jnp.ndarray]:
-    input_collections = {'params': actor_params}
-    if actor_batch_stats is not None:
-        input_collections['batch_stats'] = actor_batch_stats
-    dist = actor_apply_fn(input_collections, observations)
+@jax.jit
+def sample_actions_jit(rng, 
+                       actor, 
+                       observations, 
+                       action_dim):
     rng, key = jax.random.split(rng)
-    return rng, dist.sample(seed=key)
+    noises = jax.random.normal(key, (*observations['pixels'].shape[:-1], action_dim))
+
+    vars = {'params': actor.params}
+    if getattr(actor, 'batch_stats', None) is not None:
+        vars['batch_stats'] = actor.batch_stats
+
+    actions = actor.apply_fn(vars, observations, noises, False)
+    return rng, actions
+
 
 class ModuleDict(nn.Module):
     """
