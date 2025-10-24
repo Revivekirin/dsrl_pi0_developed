@@ -128,4 +128,4 @@ dmypy.json
 tmp/
 wandb_config.py
 logs/
-wandb/
+wandb/examples/openpi/openpi-assets/checkpoints/
