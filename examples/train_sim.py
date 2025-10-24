@@ -178,7 +178,7 @@ def main(variant):
         agent = PixelSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
         trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger, shard_fn=shard_fn, agent_dp=agent_dp)
     elif variant.project == 'fql_distill':
-        agent = FQLAgent(variant.seed, sample_obs, sample_action, **kwargs)
+        agent = FQLAgent(variant.seed, sample_obs, sample_action, variant, agent_dp, **kwargs)
         fql_trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger, shard_fn=shard_fn, agent_dp=agent_dp)
 
     

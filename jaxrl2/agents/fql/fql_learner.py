@@ -33,7 +33,7 @@ from jaxrl2.networks.values import StateActionEnsemble
 from jaxrl2.types import Params, PRNGKey
 from jaxrl2.utils.target_update import soft_target_update
 
-from examples.train_utils_sim import batch_size
+from examples.train_utils_sim import batch_size, obs_to_pi_zero_input
 
 class TrainState(train_state.TrainState):
     batch_stats: Any
@@ -44,6 +44,7 @@ def _update_jit(
     target_critic_params: Params, batch: TrainState,
     discount: float, tau: float, target_entropy: float,
     critic_reduction: str, color_jitter: bool, aug_next: bool, num_cameras: int, action_dim: int,
+    distill_noises: jnp.ndarray, distill_targets: jnp.ndarray, 
 ) -> Tuple[PRNGKey, TrainState, TrainState, Params, TrainState, Dict[str,float]]:
     aug_pixels = batch['observations']['pixels']
     aug_next_pixels = batch['next_observations']['pixels']
@@ -85,7 +86,13 @@ def _update_jit(
     new_target_critic_params = soft_target_update(new_critic.params, target_critic_params, tau)
     
     key, rng = jax.random.split(rng)
-    new_actor, actor_info = update_actor(key, actor, new_critic, batch, critic_reduction=critic_reduction)
+    new_actor, actor_info = update_actor(
+        key, actor, new_critic, batch,
+        distill_noises=distill_noises,
+        distill_targets=distill_targets,
+        critic_reduction=critic_reduction,
+        normalize_q_loss=False,  
+    )
 
     return rng, new_actor, new_critic, new_target_critic_params, {
         **critic_info,
@@ -93,17 +100,16 @@ def _update_jit(
     }
 
 
-#TODO
-def compute_pi0_actions():
-    pass
+
 
 
 class FQLAgent(Agent):
-
     def __init__(self,
                  seed: int,
                  observations: Union[jnp.ndarray, DatasetDict],
                  actions: jnp.ndarray,
+                 variant: Any = None,
+                 agent_dp:Any = None,
                  actor_lr: float = 3e-4,
                  critic_lr: float = 3e-4,
                  decay_steps: Optional[int] = None,
@@ -128,9 +134,9 @@ class FQLAgent(Agent):
                  action_magnitude: float = 1.0,
                  num_cameras: int = 1,
                  ):
-        """
-        An implementation of the version of Soft-Actor-Critic described in https://arxiv.org/abs/1812.05905
-        """
+        
+        self.variant = variant
+        self.agent_dp = agent_dp
 
         self.aug_next=aug_next
         self.color_jitter = color_jitter
@@ -250,10 +256,66 @@ class FQLAgent(Agent):
         print(self.critic_reduction)
 
 
+    # def update(self, batch: FrozenDict) -> Dict[str, float]:
+    #     new_rng, new_actor, new_critic, new_target_critic, info = update(self, batch)
+    #     self._rng = new_rng
+    #     self._actor = new_actor
+    #     self._critic = new_critic
+    #     self._target_critic_params = new_target_critic
+    #     return info
+
+    # TODO: 1-step update -> 50 denoise 괜찮은가?
     def update(self, batch: FrozenDict) -> Dict[str, float]:
+        bsz = batch_size(batch["actions"])
+        Da = int(np.prod(batch['actions'].shape[-2:]))
+        noises = np.random.randn(bsz, Da).astype(np.float32) #TODO: random 값을 바꿔야 하는가?
+
+        # call teacher(π₀) : obs_to_pi_zero + noise_padding (50)
+        #   - times는 one-step이라 내부에서 1.0 고정 #TODO:distill의 경우 time embedding을 다르게 할 수 있지 않는가?
+        total_steps = 50
+        noise_seq = []
+        for b in range(bsz):
+            z = noises[b]                       # (Da,)
+            z = z[None, :]                      # (1, Da)
+            pad = np.repeat(z[-1:, :], total_steps - 1, axis=0)   # (49, Da)
+            seq = np.concatenate([z, pad], axis=0)[None]          # (1, 50, Da)
+            noise_seq.append(seq)
+        noise_seq = np.concatenate(noise_seq, axis=0)             # (B, 50, Da)
+
+        # π₀ input
+        teacher_actions = []
+        for b in range(bsz):
+            obs_np = jax.tree_map(lambda x: np.asarray(x[b]), batch['observations'])
+            obs_pi0 = obs_to_pi_zero_input(obs_np, variant=self.variant)
+            action = self.agent_dp.infer(obs_pi0, noise=noise_seq[b:b+1])["actions"]
+
+            if action.ndim == 3:       # (1, 50, 14) or (B=1, 50, 14)
+                a_star = np.asarray(action[0, 0, :])   # (14,)
+            elif action.ndim == 2:     # (50, 14)
+                a_star = np.asarray(action[0, :])      # (14,)
+            elif action.ndim == 1 and action.size == 14:   # (14,)
+                a_star = np.asarray(action)
+            else:
+                raise ValueError(f"Unexpected action shape: {action.shape}")
+
+            teacher_actions.append(a_star[None, :])     # (1, 14)
+
+        teacher_actions = np.concatenate(teacher_actions, axis=0).astype(np.float32)  # (B, Da)
+
+        # jax array casting
+        distill_noises   = jnp.asarray(noises)
+        distill_targets  = jnp.asarray(teacher_actions)
+        print("[DEBUG] distill_noises :", distill_noises.shape)
+        print("[DEBUG] distill_targets :", distill_targets.shape)
+
         new_rng, new_actor, new_critic, new_target_critic, info = _update_jit(
-            self._rng, self._actor, self._critic, self._target_critic_params, batch, self.discount, self.tau, self.target_entropy, self.critic_reduction, self.color_jitter, self.aug_next, self.num_cameras, self.action_dim
-            )
+            self._rng, self._actor, self._critic, self._target_critic_params,
+            batch, self.discount, self.tau, self.target_entropy,
+            self.critic_reduction, self.color_jitter, self.aug_next, self.num_cameras,
+            self.action_dim,
+            distill_noises, distill_targets,
+        )
+
         self._rng = new_rng
         self._actor = new_actor
         self._critic = new_critic

@@ -15,12 +15,8 @@ def update_critic(
         target_critic: TrainState,  batch: DatasetDict,
         discount: float, action_dim: int, 
         critic_reduction: str = 'min') -> Tuple[TrainState, Dict[str, float]]:
-    #TODO:  next actions sampling from actor_updater 
-    # dist = actor.apply_fn({'params': actor.params}, batch['next_observations'])
-    # next_actions, next_log_probs = dist.sample_and_log_prob(seed=key)
-
+    
     next_obs = batch['next_observations']
-    obs = batch['observations']
     bsz = batch_size(batch["observations"])
     Da = int(np.prod(batch["actions"].shape[-2:]))
 

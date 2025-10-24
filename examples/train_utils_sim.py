@@ -129,6 +129,43 @@ def obs_to_img(obs, variant):
         curr_image = np.array(PIL.Image.fromarray(curr_image).resize((variant.resize_image, variant.resize_image)))
     return curr_image
 
+# def obs_to_pi_zero_input(obs, variant):
+#     if variant.env == 'libero':
+#         img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+#         wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+#         img = image_tools.convert_to_uint8(
+#             image_tools.resize_with_pad(img, 224, 224)
+#         )
+#         wrist_img = image_tools.convert_to_uint8(
+#             image_tools.resize_with_pad(wrist_img, 224, 224)
+#         )
+        
+#         obs_pi_zero = {
+#                         "observation/image": img,
+#                         "observation/wrist_image": wrist_img,
+#                         "observation/state": np.concatenate(
+#                             (
+#                                 obs["robot0_eef_pos"],
+#                                 _quat2axisangle(obs["robot0_eef_quat"]),
+#                                 obs["robot0_gripper_qpos"],
+#                             )
+#                         ),
+#                         "prompt": str(variant.task_description),
+#                     }
+#     elif variant.env == 'aloha_cube':
+#         img = np.ascontiguousarray(obs["pixels"]["top"])
+#         img = image_tools.convert_to_uint8(
+#             image_tools.resize_with_pad(img, 224, 224)
+#         )
+#         obs_pi_zero = {
+#             "state": obs["agent_pos"],
+#             "images": {"cam_high": np.transpose(img, (2,0,1))}
+#         }
+#     else:
+#         raise NotImplementedError()
+#     print(obs_pi_zero)
+#     return obs_pi_zero
+
 def obs_to_pi_zero_input(obs, variant):
     if variant.env == 'libero':
         img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
@@ -141,28 +178,66 @@ def obs_to_pi_zero_input(obs, variant):
         )
         
         obs_pi_zero = {
-                        "observation/image": img,
-                        "observation/wrist_image": wrist_img,
-                        "observation/state": np.concatenate(
-                            (
-                                obs["robot0_eef_pos"],
-                                _quat2axisangle(obs["robot0_eef_quat"]),
-                                obs["robot0_gripper_qpos"],
-                            )
-                        ),
-                        "prompt": str(variant.task_description),
-                    }
-    elif variant.env == 'aloha_cube':
-        img = np.ascontiguousarray(obs["pixels"]["top"])
-        img = image_tools.convert_to_uint8(
-            image_tools.resize_with_pad(img, 224, 224)
-        )
-        obs_pi_zero = {
-            "state": obs["agent_pos"],
-            "images": {"cam_high": np.transpose(img, (2,0,1))}
+            "observation/image": img,
+            "observation/wrist_image": wrist_img,
+            "observation/state": np.concatenate(
+                (
+                    obs["robot0_eef_pos"],
+                    _quat2axisangle(obs["robot0_eef_quat"]),
+                    obs["robot0_gripper_qpos"],
+                )
+            ),
+            "prompt": str(variant.task_description),
         }
+
+    elif variant.env == 'aloha_cube':
+        px = obs["pixels"]
+        if isinstance(px, dict):
+            img_src = px.get("top", px[next(iter(px.keys()))])
+            img = np.ascontiguousarray(img_src)
+        
+        else: # for update on FQLAgent
+            img = np.asarray(px)
+
+            # HxWxCx1 → HxWxC
+            if img.ndim == 4 and img.shape[-1] == 1:
+                img = img[..., 0]
+
+            # HxWx1 → HxWx3, HxW → HxWx3
+            if img.ndim == 3 and img.shape[-1] == 1:
+                img = np.repeat(img, 3, axis=-1)
+            if img.ndim == 2:
+                img = np.stack([img, img, img], axis=-1)
+
+            img = np.ascontiguousarray(img)
+
+        img = image_tools.convert_to_uint8(
+            image_tools.resize_with_pad(img, 224, 224) #(480, 640, 3) -> (224, 224, 3)
+        )
+    
+        if "agent_pos" in obs:
+            state = obs["agent_pos"]
+        elif "state" in obs:
+            state = obs["state"]
+        else:
+            raise KeyError("obs must contain 'agent_pos' or 'state' for aloha_cube π0 input")
+
+        state = np.asarray(state)
+        # Dx1 → D, (1,D) → (D,)
+        if state.ndim == 2 and state.shape[-1] == 1:
+            state = state[:, 0]
+        if state.ndim == 2 and state.shape[0] == 1:
+            state = state[0]
+        state = state.astype(np.float32, copy=False)
+
+        obs_pi_zero = {
+            "state": state,
+            "images": {"cam_high": np.transpose(img, (2, 0, 1))},  # CHW
+        }
+
     else:
         raise NotImplementedError()
+
     return obs_pi_zero
 
 def obs_to_qpos(obs, variant):
@@ -329,12 +404,14 @@ def collect_traj(variant, agent, env, i, agent_dp=None):
             else:
                 # sac agent predicts the noise for diffusion model
                 actions_noise = agent.sample_actions(obs_dict)
-                actions_noise = np.reshape(actions_noise, agent.action_chunk_shape)
-                noise = np.repeat(actions_noise[-1:, :], 50 - actions_noise.shape[0], axis=0)
+                actions_noise = np.reshape(actions_noise, agent.action_chunk_shape) #(1, 32)
+                noise = np.repeat(actions_noise[-1:, :], 50 - actions_noise.shape[0], axis=0) #(1, 50, 32)
                 noise = jax.numpy.concatenate([actions_noise, noise], axis=0)[None]
             
-            actions = agent_dp.infer(obs_pi_zero, noise=noise)["actions"] # actions from pi0
-            print("[DEBUG] collect_traj actions shape :", actions.shape)
+            actions = agent_dp.infer(obs_pi_zero, noise=noise)["actions"] # actions from pi0, (50, 14)
+            print("[DEBUG] actions noise on cllect traj :", actions_noise.shape)
+            print("[DEBUG] noise on cllect traj :", noise.shape)
+            print("[DEBUG] actions on cllect traj :", actions.shape)
             action_list.append(actions_noise)
             obs_list.append(obs_dict)
      

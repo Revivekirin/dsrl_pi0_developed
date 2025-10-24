@@ -8,71 +8,74 @@ from flax.training.train_state import TrainState
 from jaxrl2.data.dataset import DatasetDict
 from jaxrl2.types import Params, PRNGKey
 
-def update_actor(key: PRNGKey, actor: TrainState, critic: TrainState,
-                 batch: DatasetDict, cross_norm:bool=False, critic_reduction:str='min') -> Tuple[TrainState, Dict[str, float]]:
-    
-    key, key_act = jax.random.split(key, num=2)
+from examples.train_utils_sim import batch_size
 
-    def actor_loss_fn(
-            actor_params: Params) -> Tuple[jnp.ndarray, Dict[str, float]]:
-        if hasattr(actor, 'batch_stats') and actor.batch_stats is not None:
-            dist, new_model_state = actor.apply_fn({'params': actor_params, 'batch_stats': actor.batch_stats}, batch['observations'], mutable=['batch_stats'])
-            if cross_norm:
-                next_dist = actor.apply_fn({'params': actor_params, 'batch_stats': actor.batch_stats}, batch['next_observations'], mutable=['batch_stats'])
-            else:
-                next_dist = actor.apply_fn({'params': actor_params, 'batch_stats': actor.batch_stats}, batch['next_observations'])
-            if type(next_dist) == tuple:
-                next_dist, new_model_state = next_dist
-        else:
+def update_actor(
+    key: PRNGKey,
+    actor: TrainState,
+    critic: TrainState,
+    batch: DatasetDict,
+    *,
+    distill_noises: jnp.ndarray,      
+    distill_targets: jnp.ndarray,     
+    critic_reduction: str = 'min',
+    alpha_distill: float = 1.0,
+    use_bc_flow: bool = False,
+    normalize_q_loss: bool = False,
+) -> Tuple[TrainState, Dict[str, float]]:
 
-            dist = actor.apply_fn({'params': actor_params}, batch['observations'])
-            next_dist = actor.apply_fn({'params': actor_params}, batch['next_observations'])
-            new_model_state = {}
-        
-        # For logging only
-        mean_dist = dist.distribution._loc
-        std_diag_dist = dist.distribution._scale_diag
-        mean_dist_norm = jnp.linalg.norm(mean_dist, axis=-1)
-        std_dist_norm = jnp.linalg.norm(std_diag_dist, axis=-1)
+    bsz = batch_size(batch["actions"])
+    Da = Da = int(batch['actions'].shape[-2] * batch['actions'].shape[-1])
 
-        
-        actions, log_probs = dist.sample_and_log_prob(seed=key_act)
+    # one-step policy -> Fixed t (1.0)
+    t = jnp.ones((bsz, 1), dtype=jnp.float32) 
 
-        if hasattr(critic, 'batch_stats') and critic.batch_stats is not None:
-            qs, _ = critic.apply_fn({'params': critic.params, 'batch_stats': critic.batch_stats}, batch['observations'],
-                            actions, mutable=['batch_stats'])
-        else:    
-            qs = critic.apply_fn({'params': critic.params}, batch['observations'], actions)
-        
-        if critic_reduction == 'min':
-            q = qs.min(axis=0)
-        elif critic_reduction == 'mean':
-            q = qs.mean(axis=0)
-        else:
-            raise ValueError(f"Invalid critic reduction: {critic_reduction}")
-        
-        actor_loss = 0 #TODO
+    def actor_loss_fn(actor_params: Params):
+        vars_act = {'params': actor_params}
+        if getattr(actor, 'batch_stats', None) is not None:
+            vars_act['batch_stats'] = actor.batch_stats
 
-        things_to_log = {
-            'actor_loss': actor_loss,
-            'entropy': -log_probs.mean(),
-            'q_pi_in_actor': q.mean(),
-            'mean_pi_norm': mean_dist_norm.mean(),
-            'std_pi_norm': std_dist_norm.mean(),
-            'mean_pi_avg': mean_dist.mean(),
-            'mean_pi_max': mean_dist.max(),
-            'mean_pi_min': mean_dist.min(),
-            'std_pi_avg': std_diag_dist.mean(),
-            'std_pi_max': std_diag_dist.max(),
-            'std_pi_min': std_diag_dist.min(),
+        a_student = actor.apply_fn(vars_act, batch['observations'], distill_noises, t, True)  # (bsz, Da)
+
+        # ----- Distillation loss (to π₀) -----
+        distill_loss = jnp.mean((a_student - jax.lax.stop_gradient(distill_targets))**2)
+
+        # ----- Q term -----
+        vars_cri = {'params': critic.params}
+        if getattr(critic, 'batch_stats', None) is not None:
+            vars_cri['batch_stats'] = critic.batch_stats
+
+        qs = critic.apply_fn(vars_cri, batch['observations'], a_student, False)  # (num_q, bsz) or (bsz,)
+        q  = qs.min(axis=0) if critic_reduction == 'min' else qs.mean(axis=0)
+        q_loss = (-q).mean()
+        if normalize_q_loss:
+            lam = jax.lax.stop_gradient(1.0 / (jnp.abs(q).mean() + 1e-8))
+            q_loss = lam * q_loss
+
+        # -----  BC flow-matching -----
+        bc_flow_loss = 0.0
+        if use_bc_flow:
+            key1, key2 = jax.random.split(key)
+            x0 = jax.random.normal(key1, (bsz, Da))
+            x1 = batch['actions'].reshape(bsz, -1)     
+            t_b = jax.random.uniform(key2, (bsz, 1))  #TODO:time embedding 수정
+            xt = (1 - t_b) * x0 + t_b * x1
+            vel = x1 - x0
+            v_pred = actor.apply_fn(vars_act, batch['observations'], xt, t_b, True,
+                                    method=getattr(actor.apply_fn.__self__.network, 'vf'))  # 구현에 맞게 수정
+            bc_flow_loss = jnp.mean((v_pred - vel)**2)
+
+        loss = q_loss + alpha_distill * distill_loss + bc_flow_loss
+        info = {
+            'actor_loss': loss,
+            'q_loss': q_loss,
+            'distill_loss': distill_loss,
+            'bc_flow_loss': bc_flow_loss,
+            'q_mean': q.mean(),
+            'action_norm': jnp.linalg.norm(a_student, axis=-1).mean(),
         }
-        return actor_loss, (things_to_log, new_model_state)
+        return loss, info
 
-    grads, (info, new_model_state) = jax.grad(actor_loss_fn, has_aux=True)(actor.params)
-    
-    if 'batch_stats' in new_model_state:
-        new_actor = actor.apply_gradients(grads=grads, batch_stats=new_model_state['batch_stats'])
-    else:
-        new_actor = actor.apply_gradients(grads=grads)
-
+    grads, info = jax.grad(actor_loss_fn, has_aux=True)(actor.params)
+    new_actor = actor.apply_gradients(grads=grads)
     return new_actor, info

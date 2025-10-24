@@ -36,7 +36,7 @@ def update_actor(key: PRNGKey, actor: TrainState, critic: TrainState,
         std_dist_norm = jnp.linalg.norm(std_diag_dist, axis=-1)
 
         
-        actions, log_probs = dist.sample_and_log_prob(seed=key_act)
+        actions, log_probs = dist.sample_and_log_prob(seed=key_act) # (256, 32)
 
         if hasattr(critic, 'batch_stats') and critic.batch_stats is not None:
             qs, _ = critic.apply_fn({'params': critic.params, 'batch_stats': critic.batch_stats}, batch['observations'],
