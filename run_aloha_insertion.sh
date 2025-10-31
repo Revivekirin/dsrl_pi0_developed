@@ -1,4 +1,18 @@
 #!/bin/bash
+#SBATCH --job-name=dsrl_pi0
+#SBATCH --nodelist=pat-t3
+#SBATCH --output=log_rl_%j.out
+#SBATCH --error=log_rl_%j.err
+#SBATCH --gres=gpu:1
+#SBATCH --mem-per-gpu=100G
+#SBATCH --cpus-per-gpu=8
+#SBATCH --time=24:00:00
+
+
+conda init
+conda activate dsrl_pi0
+cd ~/workspace2/dsrl_pi0_developed
+
 proj_name=DSRL_pi0_Aloha
 device_id=0
 
@@ -16,6 +30,7 @@ ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
 
 pip install mujoco==2.3.7
+
 
 # python3 examples/launch_train_sim.py \
 python3 $ROOT_DIR/examples/launch_train_sim.py \
@@ -37,5 +52,6 @@ python3 $ROOT_DIR/examples/launch_train_sim.py \
 --query_freq 50 \
 --hidden_dims 128 \
 --target_entropy 0.0 \
---aloha_task transfer_cube \
+--aloha_task insertion \
+--distill_only True \
 # --add_states True

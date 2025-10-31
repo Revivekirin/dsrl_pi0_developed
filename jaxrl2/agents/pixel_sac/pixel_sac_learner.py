@@ -61,6 +61,7 @@ def _update_jit(
 
     observations = batch['observations'].copy(add_or_replace={'pixels': aug_pixels})
     batch = batch.copy(add_or_replace={'observations': observations})
+    print("[DEBUG] batch size :", batch.shape)
 
     key, rng = jax.random.split(rng)
     if aug_next:

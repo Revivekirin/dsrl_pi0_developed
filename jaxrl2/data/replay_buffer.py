@@ -12,6 +12,7 @@ from jaxrl2.data.dataset import Dataset, DatasetDict
 import collections
 from flax.core import frozen_dict
 
+
 def _init_replay_dict(obs_space: gym.Space,
                       capacity: int) -> Union[np.ndarray, DatasetDict]:
     if isinstance(obs_space, gym.spaces.Box):
@@ -23,6 +24,226 @@ def _init_replay_dict(obs_space: gym.Space,
         return data_dict
     else:
         raise TypeError()
+
+
+class PI0_ReplayBuffer(Dataset):
+    
+    def __init__(self, observation_space: gym.Space, action_space: gym.Space, capacity: int):
+        self.observation_space = observation_space
+        self.action_space = action_space
+        self.capacity = capacity
+
+        print("making replay buffer of capacity ", self.capacity)
+
+        observations = _init_replay_dict(self.observation_space, self.capacity)
+        next_observations = _init_replay_dict(self.observation_space, self.capacity)
+        actions = np.empty((self.capacity, *self.action_space.shape), dtype=self.action_space.dtype)  # (32,)
+        pi0_actions = np.empty((self.capacity, 50, 14), dtype=np.float32)
+        pi0_noises = np.empty((self.capacity, 50, 32), dtype=np.float32)
+        next_actions = np.empty((self.capacity, *self.action_space.shape), dtype=self.action_space.dtype)  # (32,)
+        rewards = np.empty((self.capacity, ), dtype=np.float32)
+        masks = np.empty((self.capacity, ), dtype=np.float32)
+        discount = np.empty((self.capacity, ), dtype=np.float32)
+
+        self.data = {
+            'observations': observations,
+            'next_observations': next_observations,
+            'actions': actions,           # (32,)
+            'pi0_actions': pi0_actions,   # (50,14)
+            'pi0_noises': pi0_noises,     # (50,32)
+            'next_actions': next_actions, # (32,)
+            'rewards': rewards,
+            'masks': masks,
+            'discount': discount,
+        }
+
+        self.size = 0
+        self._traj_counter = 0
+        self._start = 0
+        self.traj_bounds = dict()
+        self.streaming_buffer_size = None # this is for streaming the online data
+
+    def __len__(self) -> int:
+        return self.size
+
+    def length(self) -> int:
+        return self.size
+
+    def increment_traj_counter(self):
+        self.traj_bounds[self._traj_counter] = (self._start, self.size) # [start, end)
+        self._start = self.size
+        self._traj_counter += 1
+
+    def get_random_trajs(self, num_trajs: int):
+        self.which_trajs = np.random.randint(0, self._traj_counter, num_trajs)
+        observations_list = []
+        next_observations_list = []
+        actions_list = []
+        pi0_actions_list = []
+        pi0_noises_list = []
+        rewards_list = []
+        terminals_list = []
+        masks_list = []
+        discount_list = []
+
+        for i in self.which_trajs:
+            start, end = self.traj_bounds[i]
+            
+            # handle this as a dictionary
+            obs_dict_curr_traj = dict()
+            for k in self.data['observations']:
+                obs_dict_curr_traj[k] = self.data['observations'][k][start:end]
+            observations_list.append(obs_dict_curr_traj)
+            
+            next_obs_dict_curr_traj = dict()
+            for k in self.data['next_observations']:
+                next_obs_dict_curr_traj[k] = self.data['next_observations'][k][start:end]    
+            next_observations_list.append(next_obs_dict_curr_traj)
+            
+            actions_list.append(self.data['actions'][start:end])
+            pi0_actions_list.append(self.data['pi0_actions'][start:end])
+            pi0_noises_list.append(self.data['pi0_noises'][start:end])
+
+            rewards_list.append(self.data['rewards'][start:end])
+            terminals_list.append(1 - self.data['masks'][start:end])
+            masks_list.append(self.data['masks'][start:end])
+
+        batch = {
+            'observations': observations_list,
+            'next_observations': next_observations_list,
+            'actions': actions_list,
+            'pi0_actions': pi0_actions_list,
+            'pi0_noises': pi0_noises_list,
+            'rewards': rewards_list,
+            'masks': masks_list,
+        }
+        return batch
+    
+    def _assert_shapes(self, data_dict):
+        if 'pi0_actions' in data_dict:
+            a = np.asarray(data_dict['pi0_actions'])
+            if a.shape != (50, 14):
+                raise ValueError(f"pi0_actions expected (50,14) but got {a.shape}")
+        if 'pi0_noises' in data_dict:
+            z = np.asarray(data_dict['pi0_noises'])
+            if z.shape != (50, 32):
+                raise ValueError(f"pi0_noises expected (50,32) but got {z.shape}")
+        if 'actions' in data_dict:
+            act = np.asarray(data_dict['actions'])
+            if act.shape[-1] != self.action_space.shape[-1]:
+                raise ValueError(f"actions last dim {act.shape[-1]} != action_space {self.action_space.shape[-1]}")
+
+    def insert(self, data_dict: DatasetDict):
+        # Optional: shape guard (helps early detection)
+        self._assert_shapes(data_dict)
+
+        if self.size == self.capacity:
+            # Double the capacity
+            observations = _init_replay_dict(self.observation_space, self.capacity)
+            next_observations = _init_replay_dict(self.observation_space, self.capacity)
+            actions = np.empty((self.capacity, *self.action_space.shape), dtype=self.action_space.dtype)
+            pi0_actions = np.empty((self.capacity, 50, 14), dtype=np.float32)
+            pi0_noises = np.empty((self.capacity, 50, 32), dtype=np.float32)
+            next_actions = np.empty((self.capacity, *self.action_space.shape), dtype=self.action_space.dtype)
+            rewards = np.empty((self.capacity, ), dtype=np.float32)
+            masks = np.empty((self.capacity, ), dtype=np.float32)
+            discount = np.empty((self.capacity, ), dtype=np.float32)
+
+            data_new = {
+                'observations': observations,
+                'next_observations': next_observations,
+                'actions': actions,
+                'pi0_actions': pi0_actions,
+                'pi0_noises': pi0_noises,
+                'next_actions': next_actions,
+                'rewards': rewards,
+                'masks': masks,
+                'discount': discount,
+            }
+
+            for x in data_new:
+                if isinstance(self.data[x], np.ndarray):
+                    self.data[x] = np.concatenate((self.data[x], data_new[x]), axis=0)
+                elif isinstance(self.data[x], dict):
+                    for y in self.data[x]:
+                        self.data[x][y] = np.concatenate((self.data[x][y], data_new[x][y]), axis=0)
+                else:
+                    raise TypeError()
+            self.capacity *= 2
+
+        for x in data_dict:
+            if x in self.data:
+                if isinstance(data_dict[x], dict):
+                    for y in data_dict[x]:
+                        self.data[x][y][self.size] = data_dict[x][y]
+                else:
+                    self.data[x][self.size] = data_dict[x]
+        self.size += 1
+    
+    def compute_action_stats(self):
+        actions = self.data['actions']
+        return {'mean': actions.mean(axis=0), 'std': actions.std(axis=0)}
+
+    def normalize_actions(self, action_stats):
+        # do not normalize gripper dimension (last dimension)
+        # copy.deepcopy(action_stats)  # 불필요
+        action_stats = copy.deepcopy(action_stats)
+        action_stats['mean'][-1] = 0
+        action_stats['std'][-1] = 1
+        self.data['actions'] = (self.data['actions'] - action_stats['mean']) / action_stats['std']
+        self.data['next_actions'] = (self.data['next_actions'] - action_stats['mean']) / action_stats['std']
+
+    def sample(self, batch_size: int, keys: Optional[Iterable[str]] = None, indx: Optional[np.ndarray] = None) -> frozen_dict.FrozenDict:
+        if self.streaming_buffer_size:
+            indices = np.random.randint(0, self.streaming_buffer_size, batch_size)
+        else:
+            indices = np.random.randint(0, self.size, batch_size)
+        data_dict = {}
+        for x in self.data:
+            if isinstance(self.data[x], np.ndarray):
+                data_dict[x] = self.data[x][indices]
+            elif isinstance(self.data[x], dict):
+                data_dict[x] = {}
+                for y in self.data[x]:
+                    data_dict[x][y] = self.data[x][y][indices]
+            else:
+                raise TypeError()
+        return frozen_dict.freeze(data_dict)
+
+    def get_iterator(self, batch_size: int, keys: Optional[Iterable[str]] = None, indx: Optional[np.ndarray] = None, queue_size: int = 2):
+        # See https://flax.readthedocs.io/en/latest/_modules/flax/jax_utils.html#prefetch_to_device
+        # queue_size = 2 should be ok for one GPU.
+        queue = collections.deque()
+
+        def enqueue(n):
+            for _ in range(n):
+                data = self.sample(batch_size, keys, indx)
+                queue.append(jax.device_put(data))
+
+        enqueue(queue_size)
+        while queue:
+            yield queue.popleft()
+            enqueue(1)
+
+    def save(self, filename):
+        save_dict = dict(
+            data=self.data,
+            size=self.size,
+            _traj_counter=self._traj_counter,
+            _start=self._start,
+            traj_bounds=self.traj_bounds
+        )
+        with open(filename, 'wb') as f:
+            pickle.dump(save_dict, f, protocol=4)
+
+    def restore(self, filename):
+        save_dict = np.load(filename, allow_pickle=True)[0]
+        # todo test this:
+        self.data = save_dict['data']
+        self.size = save_dict['size']
+        self._traj_counter = save_dict['_traj_counter']
+        self._start = save_dict['_start']
+        self.traj_bounds = save_dict['traj_bounds']
 
 
 class ReplayBuffer(Dataset):

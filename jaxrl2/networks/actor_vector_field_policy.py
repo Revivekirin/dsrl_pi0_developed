@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jaxrl2.networks import MLP  
 
 
-class OneStepFlowActor(nn.Module): # step 마다 v에 따른 action 값 출력 
+class OneStepFlowActor(nn.Module): #TODO : OneStep 이름 바꾸기
     """z ~ N(0,I) + obs -> action.
        a = clip( z + alpha * v_theta(o, z[, t]) , [-1,1] )
     """
@@ -23,12 +23,15 @@ class OneStepFlowActor(nn.Module): # step 마다 v에 따른 action 값 출력
     @nn.compact
     def __call__(self,
                  observations: jnp.ndarray,
-                 noises: jnp.ndarray,
+                 actions: jnp.ndarray,
                  times: Optional[jnp.ndarray] = None,
                  training: bool = False):
         
-        v = self.vf(observations, noises, times=times, training=training)
-        a = noises + self.alpha * v
+        # pi0 (bsz, H, A) -> (bsz, H*A)
+        actions = actions.reshape(actions.shape[0], -1)
+
+        v = self.vf(observations, actions, times=times, training=training)
+        a = actions + self.alpha * v
         if self.use_tanh_clip:
             a = jnp.tanh(a)  # [-1,1]
         return a

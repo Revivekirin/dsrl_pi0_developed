@@ -70,7 +70,6 @@ def eval_reward_function_jit(actor_apply_fn: Callable[..., distrax.Distribution]
     loss = - (batch['rewards'] * jnp.log(1. / (1. + jnp.exp(-pred))) + (1.0 - batch['rewards']) * jnp.log(1. - 1. / (1. + jnp.exp(-pred))))
     return loss.mean()
 
-
 @partial(jax.jit, static_argnames='actor_apply_fn')
 def eval_actions_jit(actor_apply_fn: Callable[..., distrax.Distribution],
                      actor_params: Params,
@@ -84,20 +83,30 @@ def eval_actions_jit(actor_apply_fn: Callable[..., distrax.Distribution],
     return dist.mode()
 
 
-@jax.jit
-def sample_actions_jit(rng, 
-                       actor, 
-                       observations, 
-                       action_dim):
+# @partial(jax.jit, static_argnames='actor_apply_fn')
+# def sample_actions_jit(
+#         rng: PRNGKey, actor_apply_fn: Callable[..., distrax.Distribution],
+#         actor_params: Params,
+#         observations: np.ndarray,
+#         actor_batch_stats: Any) -> Tuple[PRNGKey, jnp.ndarray]:
+#     input_collections = {'params': actor_params}
+#     if actor_batch_stats is not None:
+#         input_collections['batch_stats'] = actor_batch_stats
+#     dist = actor_apply_fn(input_collections, observations)
+#     rng, key = jax.random.split(rng)
+#     return rng, dist.sample(seed=key)
+
+
+@partial(jax.jit, static_argnames=('actor_apply_fn',))
+def sample_actions_jit(rng, actor_apply_fn, actor_params, observations, actor_batch_stats):
+    vars_act = {'params': actor_params}
+    if actor_batch_stats is not None:
+        vars_act['batch_stats'] = actor_batch_stats
+    dist = actor_apply_fn(vars_act, observations, training=False)
     rng, key = jax.random.split(rng)
-    noises = jax.random.normal(key, (*observations['pixels'].shape[:-1], action_dim))
-
-    vars = {'params': actor.params}
-    if getattr(actor, 'batch_stats', None) is not None:
-        vars['batch_stats'] = actor.batch_stats
-
-    actions = actor.apply_fn(vars, observations, noises, False)
+    actions = dist.sample(seed=key)         
     return rng, actions
+
 
 
 class ModuleDict(nn.Module):

@@ -36,57 +36,19 @@ class Encoder(nn.Module):
         return x.reshape((*x.shape[:-3], -1))
     
 
-class PixelMultiplexer(nn.Module):
-    encoder: Union[nn.Module, list]
-    network: nn.Module
-    latent_dim: int
-    use_bottleneck: bool=True
-    network_name: str = None
-
-    @nn.compact
-    def __call__(self,
-                 observations: Union[FrozenDict, Dict],
-                 actions: Optional[jnp.ndarray] = None,
-                 times: Optional[jnp.ndarray] = None,
-                 training: bool = False, **kwargs):
-        observations = FrozenDict(observations)
-
-        x = self.encoder(observations['pixels'], training)
-        if self.use_bottleneck:
-            x = nn.Dense(self.latent_dim, kernel_init=xavier_init())(x)
-            x = nn.LayerNorm()(x)
-            x = nn.tanh(x)
-
-        # x = observations.copy(add_or_replace={'pixels': x})
-        if 'state' in observations:
-            s = observations['state']
-            s = s.reshape(s.shape[0], -1)
-            x = jnp.concatenate([x, s], axis=-1)
-
-        # print('fully connected keys', x.keys())
-        if actions is None:
-            if self.network_name=="actor":
-                return self.network(x, times, training=training, **kwargs)
-            else:
-                return self.network(x, training=training, **kwargs)
-        else:
-            if self.network_name=="actor":
-                return self.network(x, actions, times, training=training, **kwargs)
-            else:
-                return self.network(x, actions,training=training, **kwargs)
-            
-
 # class PixelMultiplexer(nn.Module):
 #     encoder: Union[nn.Module, list]
 #     network: nn.Module
 #     latent_dim: int
 #     use_bottleneck: bool=True
+#     network_name: str = None
 
 #     @nn.compact
 #     def __call__(self,
 #                  observations: Union[FrozenDict, Dict],
 #                  actions: Optional[jnp.ndarray] = None,
-#                  training: bool = False):
+#                  times: Optional[jnp.ndarray] = None,
+#                  training: bool = False, **kwargs):
 #         observations = FrozenDict(observations)
 
 #         x = self.encoder(observations['pixels'], training)
@@ -95,12 +57,48 @@ class PixelMultiplexer(nn.Module):
 #             x = nn.LayerNorm()(x)
 #             x = nn.tanh(x)
 
-#         x = observations.copy(add_or_replace={'pixels': x})
+#         # x = observations.copy(add_or_replace={'pixels': x})
+#         if 'state' in observations:
+#             s = observations['state']
+#             s = s.reshape(s.shape[0], -1)
+#             x = jnp.concatenate([x, s], axis=-1)
 
 #         # print('fully connected keys', x.keys())
 #         if actions is None:
-#             return self.network(x, training=training)
+#             if self.network_name=="actor":
+#                 return self.network(x, times, training=training, **kwargs)
+#             else:
+#                 return self.network(x, training=training, **kwargs)
 #         else:
-#             return self.network(x, actions, training=training)
+#             if self.network_name=="actor":
+#                 return self.network(x, actions, times, training=training, **kwargs)
+#             else:
+#                 return self.network(x, actions,training=training, **kwargs)
+            
 
+class PixelMultiplexer(nn.Module):
+    encoder: Union[nn.Module, list]
+    network: nn.Module
+    latent_dim: int
+    use_bottleneck: bool=True
 
+    @nn.compact
+    def __call__(self,
+                 observations: Union[FrozenDict, Dict],
+                 actions: Optional[jnp.ndarray] = None,
+                 training: bool = False):
+        observations = FrozenDict(observations)
+
+        x = self.encoder(observations['pixels'], training)
+        if self.use_bottleneck:
+            x = nn.Dense(self.latent_dim, kernel_init=xavier_init())(x)
+            x = nn.LayerNorm()(x)
+            x = nn.tanh(x)
+
+        x = observations.copy(add_or_replace={'pixels': x})
+
+        # print('fully connected keys', x.keys())
+        if actions is None:
+            return self.network(x, training=training)
+        else:
+            return self.network(x, actions, training=training)

@@ -21,7 +21,7 @@ from gym.spaces import Dict, Box
 # from libero.libero import get_libero_path
 # from libero.libero.envs import OffScreenRenderEnv
 
-from jaxrl2.data import ReplayBuffer
+from jaxrl2.data import ReplayBuffer, PI0_ReplayBuffer
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
 import tempfile
 from functools import partial
@@ -74,8 +74,7 @@ class DummyEnv(gym.ObservationWrapper):
                 state_dim = 14
             obs_dict['state'] = Box(low=-1.0, high=1.0, shape=(state_dim, 1), dtype=np.float32)
         self.observation_space = Dict(obs_dict)
-        self.action_space = Box(low=-1, high=1, shape=(1, 32,), dtype=np.float32) # 32 is the noise action space of pi 0
-
+        self.action_space = Box(low=-1, high=1, shape=(50, 32,), dtype=np.float32)
 
 def main(variant):
     devices = jax.local_devices()
@@ -169,16 +168,19 @@ def main(variant):
     agent_dp = policy_config.create_trained_policy(config, checkpoint_dir)
     print("Loaded pi0 policy from %s", checkpoint_dir)
 
-    online_buffer_size = variant.max_steps  // variant.multi_grad_step
-    online_replay_buffer = ReplayBuffer(dummy_env.observation_space, dummy_env.action_space, int(online_buffer_size))
-    replay_buffer = online_replay_buffer
-    replay_buffer.seed(variant.seed)
-
     if variant.project == 'dsrl_pi0':
+        online_buffer_size = variant.max_steps  // variant.multi_grad_step
+        online_replay_buffer = ReplayBuffer(dummy_env.observation_space, dummy_env.action_space, int(online_buffer_size))
+        replay_buffer = online_replay_buffer
+        replay_buffer.seed(variant.seed)
         agent = PixelSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
         trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger, shard_fn=shard_fn, agent_dp=agent_dp)
     elif variant.project == 'fql_distill':
-        agent = FQLAgent(variant.seed, sample_obs, sample_action, variant, agent_dp, **kwargs)
+        online_buffer_size = variant.max_steps  // variant.multi_grad_step
+        online_replay_buffer = PI0_ReplayBuffer(dummy_env.observation_space, dummy_env.action_space, int(online_buffer_size))
+        replay_buffer = online_replay_buffer
+        replay_buffer.seed(variant.seed)
+        agent = FQLAgent(variant.seed, sample_obs, sample_action, variant, agent_dp, online_replay_buffer, **kwargs)
         fql_trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger, shard_fn=shard_fn, agent_dp=agent_dp)
 
     

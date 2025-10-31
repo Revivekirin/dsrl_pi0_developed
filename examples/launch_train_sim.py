@@ -27,6 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('--query_freq', default=-1, help='query frequency', type=int)
     parser.add_argument('--aloha_task', default='transfer_cube', help='which aloha task to use')
     parser.add_argument('--project', default='fql_distill', help='or dsrl_pi0')
+    parser.add_argument('--distill_only', default=True, help='True: Add training \pi^W')
 
     train_args_dict = dict(
         actor_lr=1e-4,

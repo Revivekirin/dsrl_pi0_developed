@@ -1,81 +1,49 @@
-from audioop import cross
 from typing import Dict, Tuple
-
 import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
-
 from jaxrl2.data.dataset import DatasetDict
 from jaxrl2.types import Params, PRNGKey
-
 from examples.train_utils_sim import batch_size
 
-def update_actor(
-    key: PRNGKey,
-    actor: TrainState,
-    critic: TrainState,
-    batch: DatasetDict,
-    *,
-    distill_noises: jnp.ndarray,      
-    distill_targets: jnp.ndarray,     
-    critic_reduction: str = 'min',
-    alpha_distill: float = 1.0,
-    use_bc_flow: bool = False,
-    normalize_q_loss: bool = False,
-) -> Tuple[TrainState, Dict[str, float]]:
+# H, DA_ACT = 50, 14
+# AH_ACT = H * DA_ACT 
 
-    bsz = batch_size(batch["actions"])
-    Da = Da = int(batch['actions'].shape[-2] * batch['actions'].shape[-1])
+def update_actor(key, actor, critic, batch, critic_reduction='mean', alpha=1.0, normalize_q_loss=False):
+    bsz = batch['observations']['pixels'].shape[0]
 
-    # one-step policy -> Fixed t (1.0)
-    t = jnp.ones((bsz, 1), dtype=jnp.float32) 
-
-    def actor_loss_fn(actor_params: Params):
+    def loss_fn(actor_params):
         vars_act = {'params': actor_params}
         if getattr(actor, 'batch_stats', None) is not None:
             vars_act['batch_stats'] = actor.batch_stats
+        dist = actor.apply_fn(vars_act, batch['observations'], training=True)
 
-        a_student = actor.apply_fn(vars_act, batch['observations'], distill_noises, t, True)  # (bsz, Da)
+        #  mode() 쓰지 말고 샘플링
+        rng_act, subkey = jax.random.split(key)
+        actions, logp = dist.sample_and_log_prob(seed=subkey)   # (B,1600), (B,)
 
-        # ----- Distillation loss (to π₀) -----
-        distill_loss = jnp.mean((a_student - jax.lax.stop_gradient(distill_targets))**2)
+        # ─ Distill (옵션1: (B,1600) 이벤트) ─
+        if 'pi0_noises' in batch:
+            w_tgt = batch['pi0_noises'].reshape(bsz, -1).astype(jnp.float32)
+            eps = 1e-6
+            w_tgt = jnp.clip(w_tgt, -1.0 + eps, 1.0 - eps)
+            # 분포 래핑을 Fix A로 만들었다면 그냥 사용:
+            log_probs = dist.log_prob(w_tgt)                   # (B,)
+            # (우회가 필요하면 atanh+야코비안 보정 방식 사용)
+            distill = (-log_probs).mean()
+        else:
+            distill = jnp.asarray(0.0, actions.dtype)
 
-        # ----- Q term -----
-        vars_cri = {'params': critic.params}
-        if getattr(critic, 'batch_stats', None) is not None:
-            vars_cri['batch_stats'] = critic.batch_stats
-
-        qs = critic.apply_fn(vars_cri, batch['observations'], a_student, False)  # (num_q, bsz) or (bsz,)
-        q  = qs.min(axis=0) if critic_reduction == 'min' else qs.mean(axis=0)
+        # ─ Q-term ─
+        qs = critic.apply_fn({'params': critic.params}, batch['observations'], actions)
+        q = qs.min(axis=0) if critic_reduction == 'min' else qs.mean(axis=0)
         q_loss = (-q).mean()
-        if normalize_q_loss:
-            lam = jax.lax.stop_gradient(1.0 / (jnp.abs(q).mean() + 1e-8))
-            q_loss = lam * q_loss
 
-        # -----  BC flow-matching -----
-        bc_flow_loss = 0.0
-        if use_bc_flow:
-            key1, key2 = jax.random.split(key)
-            x0 = jax.random.normal(key1, (bsz, Da))
-            x1 = batch['actions'].reshape(bsz, -1)     
-            t_b = jax.random.uniform(key2, (bsz, 1))  #TODO:time embedding 수정
-            xt = (1 - t_b) * x0 + t_b * x1
-            vel = x1 - x0
-            v_pred = actor.apply_fn(vars_act, batch['observations'], xt, t_b, True,
-                                    method=getattr(actor.apply_fn.__self__.network, 'vf'))  # 구현에 맞게 수정
-            bc_flow_loss = jnp.mean((v_pred - vel)**2)
+        loss = q_loss + alpha * distill
+        return loss, {'actor_loss': loss, 'q_loss': q_loss, 'distill_loss': distill}
 
-        loss = q_loss + alpha_distill * distill_loss + bc_flow_loss
-        info = {
-            'actor_loss': loss,
-            'q_loss': q_loss,
-            'distill_loss': distill_loss,
-            'bc_flow_loss': bc_flow_loss,
-            'q_mean': q.mean(),
-            'action_norm': jnp.linalg.norm(a_student, axis=-1).mean(),
-        }
-        return loss, info
 
-    grads, info = jax.grad(actor_loss_fn, has_aux=True)(actor.params)
+    grads, info = jax.grad(loss_fn, has_aux=True)(actor.params)
     new_actor = actor.apply_gradients(grads=grads)
     return new_actor, info
+
